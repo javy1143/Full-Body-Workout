@@ -1,0 +1,534 @@
+import { useState, useEffect, useRef } from "react";
+
+// ── DESIGN TOKENS ──────────────────────────────────────────────────────────
+const C = {
+  cyan:    "#00D4FF",
+  cyanDim: "#00A8CC",
+  cyanGlow:"rgba(0,212,255,0.18)",
+  cyanFog: "rgba(0,212,255,0.07)",
+  blue:    "#0066FF",
+  bg:      "#050508",
+  bg1:     "#0A0B0F",
+  bg2:     "#0E1018",
+  bg3:     "#141620",
+  line:    "rgba(0,212,255,0.12)",
+  lineHi:  "rgba(0,212,255,0.28)",
+  white:   "#F0F4FF",
+  dim:     "#4A5068",
+  dimHi:   "#6B7490",
+};
+
+// ── DATA ───────────────────────────────────────────────────────────────────
+const workouts = {
+  A: {
+    label: "WORKOUT A", tag: "Push · Pull · Core",
+    exercises: [
+      { muscle: "Chest",      name: "Barbell Bench Press",    sets: "4", reps: "6–8",   rest: "90s",  tip: "Control the eccentric, explode up. Elbows ~45°." },
+      { muscle: "Back",       name: "Bent-Over Barbell Row",  sets: "4", reps: "6–8",   rest: "90s",  tip: "Hinge at hips, pull to lower chest. Squeeze scapulae at top." },
+      { muscle: "Shoulders",  name: "Seated Dumbbell Press",  sets: "3", reps: "10–12", rest: "75s",  tip: "Don't lock out — keep tension on delts throughout." },
+      { muscle: "Quads",      name: "Barbell Back Squat",     sets: "4", reps: "8–10",  rest: "2min", tip: "Brace core hard, knees track toes. Depth = parallel or below." },
+      { muscle: "Hamstrings", name: "Romanian Deadlift",      sets: "3", reps: "10–12", rest: "75s",  tip: "Push hips back, soft knee bend. Feel the stretch at the bottom." },
+      { muscle: "Biceps",     name: "EZ-Bar Curl",            sets: "3", reps: "10–12", rest: "60s",  tip: "Full ROM, no swinging. Squeeze hard at the top." },
+      { muscle: "Triceps",    name: "Cable Tricep Pushdown",  sets: "3", reps: "12–15", rest: "60s",  tip: "Lock elbows at sides, full extension each rep." },
+      { muscle: "Core",       name: "Hanging Leg Raise",      sets: "3", reps: "12–15", rest: "60s",  tip: "Posterior pelvic tilt at top. No kipping." },
+    ],
+  },
+  B: {
+    label: "WORKOUT B", tag: "Compound · Power · Volume",
+    exercises: [
+      { muscle: "Back",      name: "Weighted Pull-Up",          sets: "4", reps: "6–8",   rest: "90s",  tip: "Dead hang start, chest to bar. Add weight if bodyweight is easy." },
+      { muscle: "Chest",     name: "Incline Dumbbell Press",    sets: "4", reps: "8–10",  rest: "90s",  tip: "30–45° incline hits upper chest. Full stretch at bottom." },
+      { muscle: "Glutes",    name: "Barbell Hip Thrust",        sets: "4", reps: "10–12", rest: "75s",  tip: "Drive through heels, fully extend hips. Squeeze hard at top." },
+      { muscle: "Quads",     name: "Leg Press",                 sets: "3", reps: "12–15", rest: "75s",  tip: "Feet shoulder-width, don't lock out knees. Control the descent." },
+      { muscle: "Shoulders", name: "Cable Lateral Raise",       sets: "4", reps: "12–15", rest: "60s",  tip: "Slight forward lean, raise to shoulder height. Feel the burn." },
+      { muscle: "Back",      name: "Seated Cable Row",          sets: "3", reps: "10–12", rest: "75s",  tip: "Tall posture, pull to navel. Pause and squeeze at peak." },
+      { muscle: "Triceps",   name: "Overhead Tricep Extension", sets: "3", reps: "10–12", rest: "60s",  tip: "Stretch the long head. Elbows point forward throughout." },
+      { muscle: "Biceps",    name: "Hammer Curl",               sets: "3", reps: "12–15", rest: "60s",  tip: "Neutral grip hits brachialis. Great for arm thickness." },
+    ],
+  },
+};
+
+const muscleColors = {
+  Chest: "#FF4D6D", Back: "#00D4FF", Shoulders: "#FFD60A",
+  Quads: "#7BFF6A", Hamstrings: "#FF9A3C", Glutes: "#FF6B9D",
+  Biceps: "#B57BFF", Triceps: "#FF7B4D", Core: "#4DFFEF",
+};
+
+const KEY_LIFTS = ["Barbell Bench Press","Barbell Back Squat","Bent-Over Barbell Row","Weighted Pull-Up","Romanian Deadlift"];
+
+function calc1RM(w, r) { return (!w || !r) ? 0 : Math.round(w * (1 + r / 30)); }
+function suggestNext(logs, repStr) {
+  if (!logs?.length) return null;
+  const last = logs[logs.length - 1];
+  const top = parseInt((repStr || "10").split("–")[1]) || parseInt(repStr) || 10;
+  const bump = last.reps >= top ? (last.weight > 80 ? 5 : 2.5) : 0;
+  return Math.round((last.weight + bump) * 2) / 2;
+}
+
+async function storageGet(k) { try { const r = await window.storage.get(k); return r ? JSON.parse(r.value) : null; } catch { return null; } }
+async function storageSet(k, v) { try { await window.storage.set(k, JSON.stringify(v)); } catch {} }
+
+// ── SPARKLINE ──────────────────────────────────────────────────────────────
+function Sparkline({ data, width = 80, height = 30 }) {
+  if (!data?.length || data.length < 2)
+    return <span style={{ fontFamily: "monospace", fontSize: 11, color: C.dim }}>—</span>;
+  const vals = data.map(d => d.e1rm);
+  const min = Math.min(...vals), max = Math.max(...vals), range = max - min || 1;
+  const pts = vals.map((v, i) => {
+    const x = (i / (vals.length - 1)) * width;
+    const y = height - ((v - min) / range) * (height - 8) - 4;
+    return `${x},${y}`;
+  }).join(" ");
+  const [lx, ly] = pts.split(" ").pop().split(",");
+  return (
+    <svg width={width} height={height} style={{ overflow: "visible" }}>
+      <defs>
+        <linearGradient id="spark" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stopColor={C.blue} />
+          <stop offset="100%" stopColor={C.cyan} />
+        </linearGradient>
+      </defs>
+      <polyline points={pts} fill="none" stroke="url(#spark)" strokeWidth="1.8" strokeLinejoin="round" />
+      <circle cx={lx} cy={ly} r="3" fill={C.cyan} style={{ filter: `drop-shadow(0 0 4px ${C.cyan})` }} />
+    </svg>
+  );
+}
+
+// ── LOG MODAL ──────────────────────────────────────────────────────────────
+function LogModal({ exercise, logs, onClose, onSave }) {
+  const [weight, setWeight] = useState("");
+  const [reps, setReps] = useState("");
+  const suggested = suggestNext(logs, exercise.reps);
+  const preview1rm = weight && reps ? calc1RM(parseFloat(weight), parseInt(reps)) : null;
+  const best = logs.length ? Math.max(...logs.map(l => l.e1rm)) : null;
+  const isPR = preview1rm && preview1rm > (best || 0);
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", zIndex: 999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, backdropFilter: "blur(8px)" }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: C.bg1,
+        border: `1px solid ${C.lineHi}`,
+        borderRadius: 2,
+        padding: 28,
+        width: "100%",
+        maxWidth: 400,
+        boxShadow: `0 0 60px ${C.cyanGlow}, 0 0 120px rgba(0,102,255,0.08)`,
+        position: "relative",
+        overflow: "hidden",
+      }}>
+        {/* Corner accents */}
+        <div style={{ position: "absolute", top: 0, left: 0, width: 40, height: 40, borderTop: `2px solid ${C.cyan}`, borderLeft: `2px solid ${C.cyan}` }} />
+        <div style={{ position: "absolute", bottom: 0, right: 0, width: 40, height: 40, borderBottom: `2px solid ${C.cyan}`, borderRight: `2px solid ${C.cyan}` }} />
+
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 11, letterSpacing: 4, color: C.cyanDim, marginBottom: 5, textTransform: "uppercase" }}>Log Set</div>
+          <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 26, letterSpacing: 1, color: C.white, lineHeight: 1.1 }}>{exercise.name}</div>
+          <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: C.dim, marginTop: 4 }}>{exercise.sets} sets · {exercise.reps} reps target</div>
+        </div>
+
+        {suggested && (
+          <div style={{ background: C.cyanFog, border: `1px solid ${C.line}`, borderLeft: `3px solid ${C.cyan}`, borderRadius: 2, padding: "10px 14px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 9, color: C.cyan, letterSpacing: 2, textTransform: "uppercase", marginBottom: 2 }}>Suggested Target</div>
+              <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 28, color: C.white, lineHeight: 1 }}>{suggested} <span style={{ fontSize: 13, color: C.dim }}>lbs</span></div>
+            </div>
+            <div style={{ fontSize: 22, filter: `drop-shadow(0 0 8px ${C.cyan})` }}>🎯</div>
+          </div>
+        )}
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+          {[["Weight (lbs)", weight, setWeight, "135"], ["Reps done", reps, setReps, "8"]].map(([label, val, set, ph]) => (
+            <div key={label}>
+              <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 9, color: C.dim, letterSpacing: 2, textTransform: "uppercase", marginBottom: 6 }}>{label}</div>
+              <input type="number" value={val} onChange={e => set(e.target.value)} placeholder={ph}
+                style={{ width: "100%", background: C.bg2, border: `1px solid ${val ? C.lineHi : C.line}`, borderRadius: 2, padding: "11px 12px", color: C.white, fontFamily: "'DM Sans',sans-serif", fontSize: 16, outline: "none", transition: "border-color 0.2s", boxShadow: val ? `0 0 12px ${C.cyanGlow}` : "none" }}
+              />
+            </div>
+          ))}
+        </div>
+
+        {preview1rm && (
+          <div style={{ background: isPR ? "rgba(0,212,255,0.06)" : C.bg2, border: `1px solid ${isPR ? C.lineHi : C.line}`, borderRadius: 2, padding: "10px 14px", marginBottom: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: C.dim }}>Estimated 1RM</span>
+            <span style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 24, color: isPR ? C.cyan : C.dimHi, letterSpacing: 1 }}>
+              {preview1rm} lbs {isPR && <span style={{ color: C.cyan, filter: `drop-shadow(0 0 6px ${C.cyan})` }}>⚡ PR</span>}
+            </span>
+          </div>
+        )}
+
+        {logs.length > 0 && (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 9, color: C.dim, letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 }}>History</div>
+            <div style={{ maxHeight: 100, overflowY: "auto" }}>
+              {[...logs].reverse().map((l, i) => (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: `1px solid ${C.line}`, fontFamily: "'DM Sans',sans-serif", fontSize: 11 }}>
+                  <span style={{ color: C.dim }}>{l.date}</span>
+                  <span style={{ color: C.dimHi }}>{l.weight} × {l.reps}</span>
+                  <span style={{ color: C.cyan }}>~{l.e1rm}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={onClose} style={{ flex: 1, padding: 11, borderRadius: 2, background: "transparent", border: `1px solid ${C.line}`, color: C.dim, fontFamily: "'DM Sans',sans-serif", fontSize: 13, cursor: "pointer", transition: "all 0.2s" }}>Cancel</button>
+          <button onClick={() => {
+            if (!weight || !reps) return;
+            onSave({ date: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" }), weight: parseFloat(weight), reps: parseInt(reps), e1rm: calc1RM(parseFloat(weight), parseInt(reps)) });
+          }} style={{
+            flex: 2, padding: 11, borderRadius: 2,
+            background: weight && reps ? `linear-gradient(90deg, ${C.blue}, ${C.cyan})` : C.bg3,
+            border: "none", color: weight && reps ? C.bg : C.dim,
+            fontFamily: "'Barlow Condensed',sans-serif", fontSize: 18, letterSpacing: 2,
+            cursor: "pointer", transition: "all 0.2s",
+            boxShadow: weight && reps ? `0 0 20px ${C.cyanGlow}` : "none",
+          }}>LOG SET</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── DASHBOARD ──────────────────────────────────────────────────────────────
+function Dashboard({ allLogs, onClose }) {
+  const all = [...workouts.A.exercises, ...workouts.B.exercises];
+  const lifts = all.map(ex => {
+    const logs = allLogs[ex.name] || [];
+    if (!logs.length) return null;
+    const best = Math.max(...logs.map(l => l.e1rm));
+    const prog = logs[0].e1rm ? Math.round(((logs[logs.length-1].e1rm - logs[0].e1rm) / logs[0].e1rm) * 100) : null;
+    return { ...ex, logs, best, prog, isPR: logs.length > 1 && logs[logs.length-1].e1rm === best };
+  }).filter(Boolean);
+
+  const keyLifts = lifts.filter(l => KEY_LIFTS.includes(l.name));
+  const otherLifts = lifts.filter(l => !KEY_LIFTS.includes(l.name));
+  const totalLogs = Object.values(allLogs).reduce((a, l) => a + l.length, 0);
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: C.bg, zIndex: 998, overflowY: "auto" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@300;400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap');
+        .dc { background: ${C.bg1}; border: 1px solid ${C.line}; border-radius: 2px; padding: 16px; position: relative; overflow: hidden; transition: border-color 0.2s; }
+        .dc:hover { border-color: ${C.lineHi}; }
+      `}</style>
+
+      {/* Sticky header */}
+      <div style={{ background: C.bg, borderBottom: `1px solid ${C.line}`, padding: "20px", position: "sticky", top: 0, zIndex: 10 }}>
+        <div style={{ maxWidth: 700, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 10, letterSpacing: 5, color: C.cyanDim, marginBottom: 3 }}>STRENGTH TRACKER</div>
+            <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 38, letterSpacing: 3, color: C.white, lineHeight: 1 }}>DASHBOARD</div>
+          </div>
+          <button onClick={onClose} style={{ background: "transparent", border: `1px solid ${C.line}`, borderRadius: 2, padding: "8px 18px", color: C.dimHi, fontFamily: "'Barlow Condensed',sans-serif", fontSize: 15, letterSpacing: 2, cursor: "pointer" }}>← BACK</button>
+        </div>
+      </div>
+
+      <div style={{ maxWidth: 700, margin: "0 auto", padding: "24px 16px" }}>
+        {!lifts.length ? (
+          <div style={{ textAlign: "center", padding: "80px 20px" }}>
+            <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 60, color: C.line, letterSpacing: 4, marginBottom: 16 }}>NO DATA</div>
+            <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 13, color: C.dim, lineHeight: 2 }}>Log your first set to start building your strength record.</div>
+          </div>
+        ) : (
+          <>
+            {/* KPIs */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: 28 }}>
+              {[
+                { label: "Lifts Tracked", value: lifts.length },
+                { label: "Total Sets", value: totalLogs },
+                { label: "Active PRs", value: lifts.filter(l => l.isPR).length },
+              ].map(s => (
+                <div key={s.label} className="dc" style={{ textAlign: "center" }}>
+                  <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 44, color: C.cyan, lineHeight: 1, filter: `drop-shadow(0 0 8px ${C.cyanGlow})` }}>{s.value}</div>
+                  <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 9, color: C.dim, letterSpacing: 2, textTransform: "uppercase", marginTop: 6 }}>{s.label}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Key lifts */}
+            {keyLifts.length > 0 && (
+              <>
+                <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 11, letterSpacing: 5, color: C.cyanDim, marginBottom: 10, textTransform: "uppercase" }}>Key Compounds</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 28 }}>
+                  {keyLifts.map(lift => (
+                    <div key={lift.name} className="dc" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                          <span style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 9, padding: "2px 7px", borderRadius: 1, background: (muscleColors[lift.muscle]||C.cyan)+"18", color: muscleColors[lift.muscle]||C.cyan, letterSpacing: 1, textTransform: "uppercase" }}>{lift.muscle}</span>
+                          {lift.isPR && <span style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 9, padding: "2px 7px", background: `${C.cyan}20`, color: C.cyan, letterSpacing: 1, textTransform: "uppercase", border: `1px solid ${C.line}` }}>⚡ PR</span>}
+                        </div>
+                        <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 17, color: C.white, letterSpacing: 0.5 }}>{lift.name}</div>
+                        <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 10, color: C.dim, marginTop: 2 }}>
+                          {lift.logs.length} logs
+                          {lift.prog !== null && <span style={{ color: lift.prog >= 0 ? C.cyan : "#FF4D6D", marginLeft: 10 }}>{lift.prog >= 0 ? "▲" : "▼"} {Math.abs(lift.prog)}%</span>}
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                        <Sparkline data={lift.logs} width={76} height={30} />
+                        <div style={{ textAlign: "right", minWidth: 64 }}>
+                          <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 8, color: C.dim, letterSpacing: 2, textTransform: "uppercase" }}>Best 1RM</div>
+                          <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 30, color: C.cyan, lineHeight: 1, filter: `drop-shadow(0 0 6px ${C.cyanGlow})` }}>{lift.best}</div>
+                          <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 8, color: C.dim }}>lbs</div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {/* Other lifts */}
+            {otherLifts.length > 0 && (
+              <>
+                <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 11, letterSpacing: 5, color: C.cyanDim, marginBottom: 10, textTransform: "uppercase" }}>Accessory Work</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  {otherLifts.map(lift => (
+                    <div key={lift.name} className="dc">
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                        <span style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 9, padding: "2px 6px", background: (muscleColors[lift.muscle]||C.cyan)+"18", color: muscleColors[lift.muscle]||C.cyan, letterSpacing: 0.5, textTransform: "uppercase" }}>{lift.muscle}</span>
+                        {lift.isPR && <span style={{ fontSize: 12 }}>⚡</span>}
+                      </div>
+                      <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 14, color: C.white, lineHeight: 1.3, marginBottom: 10 }}>{lift.name}</div>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
+                        <div>
+                          <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 26, color: C.cyan, lineHeight: 1 }}>{lift.best}</div>
+                          <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 8, color: C.dim, textTransform: "uppercase", letterSpacing: 1 }}>best 1rm</div>
+                          {lift.prog !== null && <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 10, color: lift.prog >= 0 ? C.cyan : "#FF4D6D", marginTop: 3 }}>{lift.prog >= 0 ? "▲ +" : "▼ "}{Math.abs(lift.prog)}%</div>}
+                        </div>
+                        <Sparkline data={lift.logs} width={56} height={24} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── MAIN ───────────────────────────────────────────────────────────────────
+export default function App() {
+  const [tab, setTab] = useState("A");
+  const [open, setOpen] = useState(null);
+  const [modal, setModal] = useState(null);
+  const [dash, setDash] = useState(false);
+  const [logs, setLogs] = useState({});
+  const workout = workouts[tab];
+
+  useEffect(() => { storageGet("wt-logs-v2").then(d => { if (d) setLogs(d); }); }, []);
+
+  async function saveLog(entry) {
+    const name = modal.name;
+    const updated = { ...logs, [name]: [...(logs[name] || []), entry] };
+    setLogs(updated);
+    await storageSet("wt-logs-v2", updated);
+    setModal(null);
+  }
+
+  const totalLogged = Object.values(logs).reduce((a, l) => a + l.length, 0);
+
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg, color: C.white, fontFamily: "'DM Sans',sans-serif" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@300;400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap');
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        ::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-track { background: ${C.bg}; } ::-webkit-scrollbar-thumb { background: ${C.line}; border-radius: 2px; }
+        .ex-row { cursor: pointer; border-bottom: 1px solid ${C.line}; transition: background 0.12s; }
+        .ex-row:hover { background: ${C.cyanFog}; }
+        .tb { cursor: pointer; border: none; background: none; transition: all 0.2s; }
+        input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; }
+        input[type=number] { -moz-appearance: textfield; }
+        @keyframes pulse-line { 0%,100% { opacity:0.4; } 50% { opacity:1; } }
+      `}</style>
+
+      {/* ── HEADER ── */}
+      <div style={{ background: C.bg1, borderBottom: `1px solid ${C.line}`, padding: "0 20px", position: "sticky", top: 0, zIndex: 50 }}>
+        <div style={{ maxWidth: 700, margin: "0 auto", display: "flex", alignItems: "stretch", justifyContent: "space-between", height: 64 }}>
+          {/* Logo area */}
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <div style={{ width: 3, height: 32, background: `linear-gradient(180deg, ${C.blue}, ${C.cyan})`, borderRadius: 2, boxShadow: `0 0 10px ${C.cyanGlow}` }} />
+            <div>
+              <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 20, letterSpacing: 4, color: C.white, lineHeight: 1, textTransform: "uppercase" }}>Full Body Split</div>
+              <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 9, color: C.dim, letterSpacing: 2, textTransform: "uppercase", marginTop: 2 }}>2-Day Program</div>
+            </div>
+          </div>
+          {/* Dashboard button */}
+          <button className="tb" onClick={() => setDash(true)} style={{
+            display: "flex", alignItems: "center", gap: 10, padding: "0 18px",
+            borderLeft: `1px solid ${C.line}`, color: C.dimHi,
+          }}
+            onMouseOver={e => e.currentTarget.style.color = C.cyan}
+            onMouseOut={e => e.currentTarget.style.color = C.dimHi}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <rect x="1" y="9" width="4" height="6" rx="0.5"/><rect x="6" y="5" width="4" height="10" rx="0.5"/><rect x="11" y="1" width="4" height="14" rx="0.5"/>
+            </svg>
+            <div>
+              <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 13, letterSpacing: 2 }}>DASHBOARD</div>
+              <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 8, letterSpacing: 1, opacity: 0.6 }}>{totalLogged > 0 ? `${totalLogged} ENTRIES` : "NO DATA YET"}</div>
+            </div>
+          </button>
+        </div>
+      </div>
+
+      <div style={{ maxWidth: 700, margin: "0 auto", padding: "0 16px" }}>
+
+        {/* ── TAB SWITCHER ── */}
+        <div style={{ display: "flex", borderBottom: `1px solid ${C.line}`, marginBottom: 0 }}>
+          {["A", "B"].map(key => {
+            const active = tab === key;
+            return (
+              <button key={key} className="tb" onClick={() => { setTab(key); setOpen(null); }} style={{
+                flex: 1, padding: "20px 0", position: "relative",
+                borderBottom: active ? `2px solid ${C.cyan}` : "2px solid transparent",
+              }}>
+                <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, letterSpacing: 3, color: active ? C.white : C.dim, transition: "color 0.2s" }}>
+                  {workouts[key].label}
+                </div>
+                <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 10, color: active ? C.cyanDim : C.dim, letterSpacing: 1, marginTop: 2, transition: "color 0.2s" }}>
+                  {workouts[key].tag}
+                </div>
+                {active && <div style={{ position: "absolute", bottom: -1, left: "50%", transform: "translateX(-50%)", width: 6, height: 6, background: C.cyan, borderRadius: "50%", boxShadow: `0 0 8px ${C.cyan}` }} />}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* ── EXERCISE TABLE ── */}
+        <div style={{ marginBottom: 32 }}>
+          {/* Header */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 46px 74px 50px 84px 20px", padding: "10px 12px", borderBottom: `1px solid ${C.line}` }}>
+            {["Exercise", "Sets", "Reps", "Rest", "1RM", ""].map((h, i) => (
+              <div key={i} style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 8, color: C.dim, letterSpacing: 2, textTransform: "uppercase", textAlign: i > 0 ? "center" : "left" }}>{h}</div>
+            ))}
+          </div>
+
+          {workout.exercises.map((ex, i) => {
+            const exLogs = logs[ex.name] || [];
+            const best1rm = exLogs.length ? Math.max(...exLogs.map(l => l.e1rm)) : null;
+            const lastLog = exLogs.length ? exLogs[exLogs.length - 1] : null;
+            const suggested = suggestNext(exLogs, ex.reps);
+            const isOpen = open === i;
+
+            return (
+              <div key={ex.name}>
+                <div className="ex-row" onClick={() => setOpen(isOpen ? null : i)} style={{
+                  display: "grid", gridTemplateColumns: "1fr 46px 74px 50px 84px 20px",
+                  padding: "13px 12px", alignItems: "center",
+                  background: isOpen ? C.cyanFog : "transparent",
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                    <div style={{ width: 3, height: 28, background: muscleColors[ex.muscle] || C.cyan, borderRadius: 2, flexShrink: 0, boxShadow: `0 0 6px ${(muscleColors[ex.muscle]||C.cyan)}66` }} />
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 16, color: C.white, letterSpacing: 0.3, lineHeight: 1.2 }}>{ex.name}</div>
+                      <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 9, color: C.dim, letterSpacing: 1, textTransform: "uppercase", marginTop: 1 }}>{ex.muscle}</div>
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "center", fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, color: C.cyan, filter: `drop-shadow(0 0 4px ${C.cyanGlow})` }}>{ex.sets}</div>
+                  <div style={{ textAlign: "center", fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: C.dimHi }}>{ex.reps}</div>
+                  <div style={{ textAlign: "center", fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: C.dim }}>{ex.rest}</div>
+                  <div style={{ textAlign: "center", fontFamily: "'Barlow Condensed',sans-serif", fontSize: 18, color: best1rm ? C.cyan : C.line, filter: best1rm ? `drop-shadow(0 0 4px ${C.cyanGlow})` : "none" }}>
+                    {best1rm || "—"}
+                  </div>
+                  <div style={{ textAlign: "center", fontFamily: "monospace", fontSize: 13, color: isOpen ? C.cyan : C.dim, transition: "all 0.2s", transform: isOpen ? "rotate(45deg)" : "none", display: "inline-block" }}>+</div>
+                </div>
+
+                {isOpen && (
+                  <div style={{ padding: "14px 12px 16px 28px", background: `linear-gradient(90deg, ${C.cyanFog}, transparent)`, borderBottom: `1px solid ${C.line}` }}>
+                    {/* Tip */}
+                    <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: C.dimHi, lineHeight: 1.7, marginBottom: 14, fontStyle: "italic" }}>
+                      <span style={{ color: C.cyanDim, marginRight: 6 }}>◆</span>{ex.tip}
+                    </div>
+
+                    {/* Mini stats */}
+                    <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+                      {lastLog && (
+                        <div style={{ background: C.bg2, border: `1px solid ${C.line}`, borderRadius: 2, padding: "8px 12px", flex: "1 1 88px" }}>
+                          <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 8, color: C.dim, letterSpacing: 2, textTransform: "uppercase", marginBottom: 3 }}>Last Set</div>
+                          <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 18, color: C.white }}>{lastLog.weight} <span style={{ fontSize: 10, color: C.dim }}>lbs</span> × {lastLog.reps}</div>
+                          <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 9, color: C.dim }}>{lastLog.date}</div>
+                        </div>
+                      )}
+                      {suggested && (
+                        <div style={{ background: C.cyanFog, border: `1px solid ${C.line}`, borderLeft: `2px solid ${C.cyan}`, borderRadius: 2, padding: "8px 12px", flex: "1 1 88px" }}>
+                          <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 8, color: C.cyan, letterSpacing: 2, textTransform: "uppercase", marginBottom: 3 }}>Next Session</div>
+                          <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 18, color: C.white }}>{suggested} <span style={{ fontSize: 10, color: C.dim }}>lbs</span></div>
+                          <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 9, color: C.dim }}>target weight</div>
+                        </div>
+                      )}
+                      {best1rm && (
+                        <div style={{ background: C.bg2, border: `1px solid ${C.line}`, borderRadius: 2, padding: "8px 12px", flex: "1 1 88px" }}>
+                          <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 8, color: C.dim, letterSpacing: 2, textTransform: "uppercase", marginBottom: 3 }}>Best 1RM</div>
+                          <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 18, color: C.cyan, filter: `drop-shadow(0 0 4px ${C.cyanGlow})` }}>{best1rm} <span style={{ fontSize: 10, color: C.dim }}>lbs</span></div>
+                          <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 9, color: C.dim }}>estimated max</div>
+                        </div>
+                      )}
+                    </div>
+
+                    <button onClick={e => { e.stopPropagation(); setModal(ex); }} style={{
+                      display: "flex", alignItems: "center", gap: 10,
+                      padding: "10px 18px", borderRadius: 2,
+                      background: `linear-gradient(90deg, ${C.blue}cc, ${C.cyan}cc)`,
+                      border: `1px solid ${C.lineHi}`,
+                      color: C.bg, fontFamily: "'Barlow Condensed',sans-serif",
+                      fontSize: 16, letterSpacing: 2, cursor: "pointer",
+                      boxShadow: `0 0 20px ${C.cyanGlow}`,
+                      transition: "all 0.2s",
+                    }}>
+                      <span style={{ fontSize: 14 }}>+</span> LOG SET
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* ── SCHEDULE ── */}
+        <div style={{ marginBottom: 28 }}>
+          <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 11, letterSpacing: 5, color: C.cyanDim, marginBottom: 12, textTransform: "uppercase" }}>Suggested Schedule</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            {[
+              { freq: "2× / week", plan: ["Mon — Workout A", "Thu — Workout B"] },
+              { freq: "3× / week", plan: ["Mon — Workout A", "Wed — Workout B", "Fri — Workout A"] },
+            ].map(s => (
+              <div key={s.freq} style={{ background: C.bg1, border: `1px solid ${C.line}`, borderRadius: 2, padding: "14px 16px" }}>
+                <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 18, color: C.cyan, letterSpacing: 2, marginBottom: 10 }}>{s.freq}</div>
+                {s.plan.map(d => (
+                  <div key={d} style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: C.dimHi, lineHeight: 2, display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ width: 4, height: 4, background: C.cyan, borderRadius: "50%", opacity: 0.5 }} />{d}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* ── TIPS ── */}
+        <div style={{ background: C.bg1, border: `1px solid ${C.line}`, borderRadius: 2, padding: "18px 20px", marginBottom: 32, position: "relative", overflow: "hidden" }}>
+          <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 2, background: `linear-gradient(90deg, ${C.blue}, ${C.cyan}, transparent)` }} />
+          <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 11, letterSpacing: 5, color: C.cyanDim, marginBottom: 14, textTransform: "uppercase" }}>Protocol Notes</div>
+          {[
+            "Warm up 5–10 min before lifting — bike, jump rope, or dynamic movement.",
+            "Progressive overload is the only rule that matters. Add weight or reps every session.",
+            "End each session with a high-rep finisher (20+ reps) on cables for max pump.",
+            "Hit 0.7–1g protein per lb of bodyweight. Sleep 7–9h. Everything else is secondary.",
+          ].map((tip, i) => (
+            <div key={i} style={{ display: "flex", gap: 12, marginBottom: i < 3 ? 10 : 0, alignItems: "flex-start" }}>
+              <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 13, color: C.cyanDim, letterSpacing: 1, marginTop: 1, flexShrink: 0 }}>0{i + 1}</div>
+              <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: C.dimHi, lineHeight: 1.7 }}>{tip}</div>
+            </div>
+          ))}
+        </div>
+
+      </div>
+
+      {modal && <LogModal exercise={modal} logs={logs[modal.name] || []} onClose={() => setModal(null)} onSave={saveLog} />}
+      {dash && <Dashboard allLogs={logs} onClose={() => setDash(false)} />}
+    </div>
+  );
+}
